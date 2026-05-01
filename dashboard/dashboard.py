@@ -15,6 +15,9 @@ st.set_page_config(
     layout="wide",
 )
 
+# =========================================================
+# PATH
+# =========================================================
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
 RAW_DATA_PATH = PROJECT_DIR / "data" / "datasoal.csv"
@@ -22,15 +25,16 @@ CLEAN_DIR = BASE_DIR / "data_cleran"
 CLEAN_DATA_PATH = CLEAN_DIR / "datasoal_clean.csv"
 
 
-# =========================
-# Data utilities
-# =========================
+# =========================================================
+# DATA UTILITIES
+# =========================================================
 def read_dataset(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"File data tidak ditemukan: {path}")
 
     encodings = ("utf-8-sig", "utf-8", "latin1")
     last_error = None
+
     for enc in encodings:
         try:
             return pd.read_csv(path, encoding=enc)
@@ -49,6 +53,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 def clean_text(value: object) -> str:
     if pd.isna(value):
         return ""
+
     text = str(value).lower().strip()
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[“”\"'`]", "", text)
@@ -63,14 +68,15 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     # Standarisasi nama kolom yang mungkin berbeda penulisannya
     rename_map = {}
     for col in df.columns:
-        if col.replace("_", " ") == "link sumber buku":
+        normalized = col.replace("_", " ").strip()
+        if normalized == "link sumber buku":
             rename_map[col] = "link_sumber_buku"
         elif col in {"link_sumber", "sumber_buku", "link_buku"}:
             rename_map[col] = "link_sumber_buku"
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    # Kolom yang wajib ada
+    # Pastikan kolom inti tersedia
     required_cols = [
         "no",
         "topik",
@@ -85,7 +91,7 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         if col not in df.columns:
             df[col] = ""
 
-    # Pastikan no ada dan numerik
+    # Isi no kalau kosong / tidak ada
     if "no" not in df.columns or df["no"].isna().all():
         df["no"] = range(1, len(df) + 1)
 
@@ -102,10 +108,10 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     df = df.drop_duplicates(subset=["soal", "jawaban"]).reset_index(drop=True)
     duplicated_removed = before - len(df)
 
-    # Reset nomor urut
+    # Nomor urut ulang
     df["no"] = range(1, len(df) + 1)
 
-    # Susun kolom
+    # Urutan kolom
     preferred = [
         "no",
         "topik",
@@ -181,9 +187,22 @@ def plot_bar(ax, data: pd.DataFrame, label_col: str, value_col: str, title: str,
     ax.grid(axis="x", linestyle="--", alpha=0.3)
 
 
-# =========================
+def calc_missing_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Hitung missing value dengan cara aman:
+    - NaN / None dihitung
+    - string kosong "" juga dihitung sebagai missing
+    """
+    temp = df.copy()
+    temp = temp.replace(r"^\s*$", pd.NA, regex=True)
+    missing = temp.isna().sum().reset_index()
+    missing.columns = ["kolom", "missing"]
+    return missing
+
+
+# =========================================================
 # UI
-# =========================
+# =========================================================
 def main():
     st.title("📘 Dashboard Data Science – Chatbot Edukatif IPA Kelas 5")
     st.caption(
@@ -199,9 +218,11 @@ def main():
 
     vectorizer, matrix = build_index(df)
 
-    # Sidebar
+    # Sidebar filter
     st.sidebar.header("Filter Data")
-    topics = ["Semua"] + sorted([t for t in df["topik"].dropna().astype(str).unique().tolist() if t.strip()])
+    topics = ["Semua"] + sorted(
+        [t for t in df["topik"].dropna().astype(str).unique().tolist() if t.strip()]
+    )
     selected_topic = st.sidebar.selectbox("Pilih topik", topics)
 
     if selected_topic != "Semua":
@@ -218,31 +239,42 @@ def main():
     c3.metric("Jumlah subtopik", f"{df['subtopik'].nunique():,}")
     c4.metric("Data duplikat terhapus", f"{duplicated_removed:,}")
 
-    # Data quality section
+    # Section 1
     st.subheader("1) Ringkasan Kualitas Data")
 
     q1, q2 = st.columns(2)
+
     with q1:
         st.write("Kolom dataset")
-        st.dataframe(
-            pd.DataFrame({
+        col_info = pd.DataFrame(
+            {
                 "kolom": df.columns,
                 "tipe": [str(t) for t in df.dtypes],
-            }),
-            use_container_width=True,
-            hide_index=True,
+            }
         )
+        st.dataframe(col_info, use_container_width=True, hide_index=True)
 
     with q2:
-        missing = df.isna().sum().reset_index()
-        missing.columns = ["kolom", "missing"]
-        missing = missing.sort_values("missing").tail(8)
-        fig, ax = plt.subplots(figsize=(8, 4))
-        plot_bar(ax, missing, "kolom", "missing", "Missing Value per Kolom", xlabel="Jumlah missing")
-        st.pyplot(fig, clear_figure=True)
+        missing = calc_missing_counts(df)
+        missing_nonzero = missing[missing["missing"] > 0].sort_values("missing", ascending=True)
 
-    # EDA
+        if missing_nonzero.empty:
+            st.success("Tidak ada missing value pada dataset.")
+        else:
+            fig, ax = plt.subplots(figsize=(8, 4))
+            plot_bar(
+                ax,
+                missing_nonzero.tail(8),
+                "kolom",
+                "missing",
+                "Missing Value per Kolom",
+                xlabel="Jumlah missing",
+            )
+            st.pyplot(fig, clear_figure=True)
+
+    # Section 2
     st.subheader("2) EDA Dataset")
+
     a1, a2 = st.columns(2)
 
     with a1:
@@ -258,6 +290,7 @@ def main():
         st.pyplot(fig, clear_figure=True)
 
     b1, b2 = st.columns(2)
+
     with b1:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.hist(df["soal_len"], bins=20)
@@ -276,7 +309,7 @@ def main():
         ax.grid(axis="y", linestyle="--", alpha=0.3)
         st.pyplot(fig, clear_figure=True)
 
-    # Sample data
+    # Section 3
     st.subheader("3) Contoh Data")
     st.dataframe(
         show_df[["no", "topik", "subtopik", "soal", "jawaban"]].head(20),
@@ -284,9 +317,10 @@ def main():
         hide_index=True,
     )
 
-    # Retrieval demo
+    # Section 4
     st.subheader("4) Demo Pencarian Jawaban Sederhana")
     query = st.text_input("Ketik pertanyaan IPA siswa, lalu sistem mencari jawaban paling mirip:")
+
     if query:
         best_row, score = retrieve_answer(query, df, vectorizer, matrix)
         if best_row is None:
@@ -297,11 +331,13 @@ def main():
             st.write(f"**Subtopik:** {best_row['subtopik']}")
             st.write(f"**Soal:** {best_row['soal']}")
             st.write(f"**Jawaban:** {best_row['jawaban']}")
+
             if "contoh" in best_row.index:
                 st.write(f"**Contoh:** {best_row['contoh']}")
             if "konteks" in best_row.index:
                 st.write(f"**Konteks:** {best_row['konteks']}")
 
+    # Section 5
     st.subheader("5) File Data Bersih")
     st.info(f"Dataset bersih otomatis disimpan ke: {CLEAN_DATA_PATH}")
 
